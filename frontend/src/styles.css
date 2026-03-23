@@ -1,0 +1,17 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply m-0 min-h-screen min-w-[320px] bg-transparent text-slate-800 antialiased;
+    font-family: "Segoe UI", "Hiragino Sans", sans-serif;
+    background:
+      radial-gradient(circle at top left, rgba(255, 255, 255, 0.95), rgba(244, 246, 248, 0.85) 45%, rgba(232, 236, 239, 0.8) 100%),
+      linear-gradient(180deg, #f8fafc 0%, #eef2f5 100%);
+  }
+
+  #root {
+    @apply min-h-screen;
+  }
+}
