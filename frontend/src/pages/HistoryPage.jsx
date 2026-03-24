@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
+import { toCategoryLabel } from '../categoryLabels'
 
 const CATEGORY_COLORS = {
   technology: 'bg-violet-500',
@@ -35,10 +36,19 @@ function fmt(iso) {
   }
 }
 
+function isWithinLastDays(iso, days) {
+  if (!iso) return false
+  const ts = new Date(iso).getTime()
+  if (!Number.isFinite(ts)) return false
+  const threshold = Date.now() - days * 24 * 60 * 60 * 1000
+  return ts >= threshold
+}
+
 export default function HistoryPage({ token, username, onLogout }) {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [shareMessage, setShareMessage] = useState('')
 
   useEffect(() => {
     const headers = {}
@@ -90,6 +100,67 @@ export default function HistoryPage({ token, username, onLogout }) {
 
   const views = data?.viewHistory || []
   const reflections = data?.reflections || []
+  const likes = data?.likes || []
+  const likedIds = useMemo(() => new Set(likes.map((item) => item.articleId)), [likes])
+
+  const weeklyReport = useMemo(() => {
+    const weeklyViews = views.filter((v) => isWithinLastDays(v.viewedAt, 7))
+    const weeklyLikes = likes.filter((v) => isWithinLastDays(v.likedAt, 7))
+    const weeklyReflections = reflections.filter((v) => isWithinLastDays(v.savedAt, 7))
+
+    const categoryCounts = weeklyViews.reduce((acc, v) => {
+      const cat = v.category || 'general'
+      acc[cat] = (acc[cat] || 0) + 1
+      return acc
+    }, {})
+    const topCategoryEntry = Object.entries(categoryCounts).sort((a, b) => b[1] - a[1])[0] || null
+
+    const sourceCounts = weeklyLikes.reduce((acc, v) => {
+      const source = v.source || '不明な媒体'
+      acc[source] = (acc[source] || 0) + 1
+      return acc
+    }, {})
+    const topSourceEntry = Object.entries(sourceCounts).sort((a, b) => b[1] - a[1])[0] || null
+
+    const activityDays = new Set(
+      [...weeklyViews.map((v) => v.viewedAt), ...weeklyLikes.map((v) => v.likedAt), ...weeklyReflections.map((v) => v.savedAt)]
+        .filter(Boolean)
+        .map((iso) => new Date(iso).toISOString().slice(0, 10))
+    ).size
+
+    return {
+      views: weeklyViews.length,
+      likes: weeklyLikes.length,
+      reflections: weeklyReflections.length,
+      topCategory: topCategoryEntry ? toCategoryLabel(topCategoryEntry[0]) : 'なし',
+      topSource: topSourceEntry ? topSourceEntry[0] : 'なし',
+      activityDays,
+    }
+  }, [views, likes, reflections])
+
+  const handleShareArticle = async (article) => {
+    const sharePayload = {
+      title: article.title,
+      text: `気になる記事: ${article.title}`,
+      url: article.url,
+    }
+
+    try {
+      if (navigator.share) {
+        await navigator.share(sharePayload)
+        setShareMessage('記事を共有しました')
+      } else if (navigator.clipboard && article.url) {
+        await navigator.clipboard.writeText(article.url)
+        setShareMessage('記事URLをコピーしました')
+      } else {
+        setShareMessage('共有に失敗しました')
+      }
+    } catch {
+      setShareMessage('共有をキャンセルしました')
+    }
+
+    setTimeout(() => setShareMessage(''), 1800)
+  }
 
   return (
     <div className="relative mx-auto w-[min(1180px,calc(100%-64px))] py-10 pb-14 sm:w-[min(100%-56px,1180px)] sm:pt-6">
@@ -135,8 +206,11 @@ export default function HistoryPage({ token, username, onLogout }) {
       </header>
 
       {loading && (
-        <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-8 text-center text-slate-400 shadow-soft">
-          読み込み中...
+        <div className="rounded-3xl border border-slate-200/80 bg-white/90 p-8 text-center text-slate-500 shadow-soft">
+          <span className="loading-inline text-base font-medium">
+            <span className="loading-spinner loading-spinner-lg" aria-hidden="true" />
+            <span>読み込み中...</span>
+          </span>
         </div>
       )}
       {error && (
@@ -144,9 +218,45 @@ export default function HistoryPage({ token, username, onLogout }) {
           {error}
         </div>
       )}
+      {shareMessage && (
+        <div className="mb-4 rounded-2xl border border-teal-200 bg-teal-50 px-4 py-3 text-sm text-teal-700 shadow-soft">
+          {shareMessage}
+        </div>
+      )}
 
       {!loading && !error && (
         <>
+          <section className="mb-6 rounded-3xl border border-teal-200/80 bg-gradient-to-br from-teal-50 to-white p-6 shadow-soft backdrop-blur">
+            <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-base font-semibold text-slate-900">週次レポート（過去7日）</h2>
+              <span className="rounded-full bg-white px-2.5 py-1 text-xs font-medium text-slate-600">
+                アクティブ日数 {weeklyReport.activityDays} 日
+              </span>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <div className="rounded-2xl border border-teal-200 bg-white p-4">
+                <p className="mb-1 text-xs text-slate-500">閲覧記事数</p>
+                <p className="text-xl font-semibold text-slate-900">{weeklyReport.views}</p>
+              </div>
+              <div className="rounded-2xl border border-teal-200 bg-white p-4">
+                <p className="mb-1 text-xs text-slate-500">Good数</p>
+                <p className="text-xl font-semibold text-slate-900">{weeklyReport.likes}</p>
+              </div>
+              <div className="rounded-2xl border border-teal-200 bg-white p-4">
+                <p className="mb-1 text-xs text-slate-500">内省保存数</p>
+                <p className="text-xl font-semibold text-slate-900">{weeklyReport.reflections}</p>
+              </div>
+            </div>
+            <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                よく見たカテゴリ: <span className="font-semibold text-slate-900">{weeklyReport.topCategory}</span>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-700">
+                よくGoodした媒体: <span className="font-semibold text-slate-900">{weeklyReport.topSource}</span>
+              </div>
+            </div>
+          </section>
+
           {/* Trend analysis */}
           <section className="mb-6 rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-soft backdrop-blur">
             <div className="mb-4 flex items-center justify-between">
@@ -161,7 +271,7 @@ export default function HistoryPage({ token, username, onLogout }) {
                 <div className="flex flex-col gap-3">
                   {stats.categoryEntries.map(([cat, count]) => (
                     <div key={cat} className="flex items-center gap-3">
-                      <span className="w-24 shrink-0 text-right text-sm text-slate-600">{cat}</span>
+                      <span className="w-24 shrink-0 text-right text-sm text-slate-600">{toCategoryLabel(cat)}</span>
                       <div className="flex-1 overflow-hidden rounded-full bg-slate-100">
                         <div
                           className={`h-4 rounded-full transition-all ${CATEGORY_COLORS[cat] || 'bg-slate-400'}`}
@@ -232,6 +342,57 @@ export default function HistoryPage({ token, username, onLogout }) {
           {/* Article click history */}
           <section className="mb-6 rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-soft backdrop-blur">
             <div className="mb-4 flex items-center justify-between">
+              <h2 className="text-base font-semibold text-slate-900">いいねした記事</h2>
+              <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
+                {likes.length} 件
+              </span>
+            </div>
+            {likes.length === 0 ? (
+              <p className="text-sm text-slate-500">まだいいねした記事はありません</p>
+            ) : (
+              <div className="flex flex-col divide-y divide-slate-100">
+                {likes.map((v, i) => (
+                  <div key={`${v.articleId}-${i}`} className="flex items-start gap-3 py-3.5">
+                    <span
+                      className={`mt-0.5 shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-medium ${CATEGORY_TEXT[v.category] || CATEGORY_TEXT.general}`}
+                    >
+                      {toCategoryLabel(v.category)}
+                    </span>
+                    <div className="min-w-0 flex-1">
+                      {v.url ? (
+                        <a
+                          href={v.url}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-sm font-medium text-slate-800 hover:text-teal-700 hover:underline"
+                        >
+                          {v.title}
+                        </a>
+                      ) : (
+                        <p className="text-sm font-medium text-slate-800">{v.title}</p>
+                      )}
+                      <p className="mt-0.5 text-xs text-slate-400">
+                        {v.source} · {fmt(v.likedAt)}
+                        {v.query && <span className="ml-2 text-slate-300">検索: {v.query}</span>}
+                      </p>
+                    </div>
+                    {v.url && (
+                      <button
+                        type="button"
+                        onClick={() => handleShareArticle(v)}
+                        className="shrink-0 rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-semibold text-slate-600 transition hover:border-teal-200 hover:text-teal-700"
+                      >
+                        共有
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <section className="mb-6 rounded-3xl border border-slate-200/80 bg-white/90 p-6 shadow-soft backdrop-blur">
+            <div className="mb-4 flex items-center justify-between">
               <h2 className="text-base font-semibold text-slate-900">記事クリック履歴</h2>
               <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-medium text-slate-600">
                 {views.length} 件
@@ -246,7 +407,7 @@ export default function HistoryPage({ token, username, onLogout }) {
                     <span
                       className={`mt-0.5 shrink-0 rounded-full border px-2.5 py-0.5 text-xs font-medium ${CATEGORY_TEXT[v.category] || CATEGORY_TEXT.general}`}
                     >
-                      {v.category || 'general'}
+                      {toCategoryLabel(v.category)}
                     </span>
                     <div className="min-w-0 flex-1">
                       {v.url ? (
@@ -263,6 +424,7 @@ export default function HistoryPage({ token, username, onLogout }) {
                       )}
                       <p className="mt-0.5 text-xs text-slate-400">
                         {v.source} · {fmt(v.viewedAt)}
+                        {likedIds.has(v.articleId) && <span className="ml-2 text-rose-400">♥ いいね済み</span>}
                         {v.query && <span className="ml-2 text-slate-300">検索: {v.query}</span>}
                       </p>
                     </div>
@@ -293,7 +455,7 @@ export default function HistoryPage({ token, username, onLogout }) {
                         <span
                           className={`rounded-full border px-2.5 py-0.5 text-xs font-medium ${CATEGORY_TEXT[r.category] || CATEGORY_TEXT.general}`}
                         >
-                          {r.category}
+                          {toCategoryLabel(r.category)}
                         </span>
                       )}
                       {r.trigger && (
