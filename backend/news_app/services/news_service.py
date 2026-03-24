@@ -1,6 +1,7 @@
 import hashlib
 import os
 import random
+from collections import defaultdict, deque
 
 import requests
 
@@ -8,7 +9,8 @@ from ..config import NEWS_API_URL, PAGE_SIZE
 
 
 def infer_category(title, description, query):
-    text = " ".join(filter(None, [title, description, query])).lower()
+    # Use only article content for categorization to avoid query-driven bias.
+    text = " ".join(filter(None, [title, description])).lower()
 
     category_keywords = {
         "technology": ["ai", "software", "tech", "startup", "app", "device", "robot"],
@@ -121,7 +123,25 @@ def fetch_newsapi_articles(query):
         seen_urls.add(url)
         normalized_articles.append(normalize_article(article, query))
 
-    # Shuffle so the order is different on every request
+    # Shuffle first to keep each category list fresh across requests.
     random.shuffle(normalized_articles)
 
-    return normalized_articles[:PAGE_SIZE]
+    # Build a category-balanced list so one category does not dominate the first page.
+    by_category = defaultdict(list)
+    for article in normalized_articles:
+        by_category[article["category"]].append(article)
+
+    category_queues = deque()
+    for category, items in by_category.items():
+        random.shuffle(items)
+        category_queues.append((category, deque(items)))
+
+    balanced = []
+    while category_queues and len(balanced) < PAGE_SIZE:
+        category, items = category_queues.popleft()
+        if items:
+            balanced.append(items.popleft())
+        if items:
+            category_queues.append((category, items))
+
+    return balanced
