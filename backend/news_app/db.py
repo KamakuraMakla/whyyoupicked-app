@@ -51,6 +51,23 @@ def init_db():
 
     cur.execute(
         """
+        CREATE TABLE IF NOT EXISTS likes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            article_id TEXT NOT NULL,
+            title TEXT,
+            source TEXT,
+            category TEXT,
+            published_at TEXT,
+            url TEXT,
+            query TEXT,
+            liked_at TEXT NOT NULL,
+            user_id INTEGER REFERENCES users(id)
+        )
+        """
+    )
+
+    cur.execute(
+        """
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             username TEXT NOT NULL UNIQUE,
@@ -61,11 +78,19 @@ def init_db():
     )
 
     # Migration: add user_id to existing tables if not present
-    for table in ("view_history", "reflections"):
+    for table in ("view_history", "reflections", "likes"):
         try:
             cur.execute(f"ALTER TABLE {table} ADD COLUMN user_id INTEGER REFERENCES users(id)")
         except Exception:
             pass  # column already exists
+
+    # One active like per user and article.
+    cur.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_likes_user_article
+        ON likes(user_id, article_id)
+        """
+    )
 
     conn.commit()
     conn.close()

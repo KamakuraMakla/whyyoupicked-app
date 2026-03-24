@@ -85,6 +85,72 @@ def save_reflection():
     return jsonify({"ok": True, "savedAt": saved_at})
 
 
+@history_bp.post("/api/history/like")
+def save_like():
+    payload = request.get_json(silent=True) or {}
+
+    article_id = payload.get("articleId")
+    if not article_id:
+        return jsonify({"error": "articleId is required"}), 400
+
+    liked = bool(payload.get("liked", True))
+    user_id = _get_user_id()
+
+    conn = get_db_connection()
+    if liked:
+        liked_at = utc_now_iso()
+        conn.execute(
+            """
+            INSERT INTO likes (article_id, title, source, category, published_at, url, query, liked_at, user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(user_id, article_id)
+            DO UPDATE SET
+                title=excluded.title,
+                source=excluded.source,
+                category=excluded.category,
+                published_at=excluded.published_at,
+                url=excluded.url,
+                query=excluded.query,
+                liked_at=excluded.liked_at
+            """,
+            (
+                article_id,
+                payload.get("title"),
+                payload.get("source"),
+                payload.get("category"),
+                payload.get("publishedAt"),
+                payload.get("url"),
+                payload.get("query"),
+                liked_at,
+                user_id,
+            ),
+        )
+        conn.commit()
+        conn.close()
+        return jsonify({"ok": True, "liked": True, "savedAt": liked_at})
+
+    if user_id:
+        conn.execute(
+            """
+            DELETE FROM likes
+            WHERE user_id = ? AND article_id = ?
+            """,
+            (user_id, article_id),
+        )
+    else:
+        conn.execute(
+            """
+            DELETE FROM likes
+            WHERE user_id IS NULL AND article_id = ?
+            """,
+            (article_id,),
+        )
+    conn.commit()
+    conn.close()
+
+    return jsonify({"ok": True, "liked": False})
+
+
 @history_bp.get("/api/history")
 def get_history():
     limit_raw = request.args.get("limit", "50")
@@ -98,10 +164,21 @@ def get_history():
     if user_id:
         views = conn.execute(
             """
-            SELECT article_id AS articleId, title, source, category, published_at AS publishedAt, url, query, viewed_at AS viewedAt
-            FROM view_history
-            WHERE user_id = ?
-            ORDER BY id DESC
+            SELECT
+                vh.article_id AS articleId,
+                vh.title,
+                vh.source,
+                vh.category,
+                vh.published_at AS publishedAt,
+                vh.url,
+                vh.query,
+                vh.viewed_at AS viewedAt,
+                CASE WHEN l.article_id IS NOT NULL THEN 1 ELSE 0 END AS liked
+            FROM view_history vh
+            LEFT JOIN likes l
+              ON l.user_id = vh.user_id AND l.article_id = vh.article_id
+            WHERE vh.user_id = ?
+            ORDER BY vh.id DESC
             LIMIT ?
             """,
             (user_id, limit),
@@ -110,6 +187,16 @@ def get_history():
             """
             SELECT article_id AS articleId, category, trigger, mood, note, query, saved_at AS savedAt
             FROM reflections
+            WHERE user_id = ?
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (user_id, limit),
+        ).fetchall()
+        likes = conn.execute(
+            """
+            SELECT article_id AS articleId, title, source, category, published_at AS publishedAt, url, query, liked_at AS likedAt
+            FROM likes
             WHERE user_id = ?
             ORDER BY id DESC
             LIMIT ?
@@ -119,9 +206,21 @@ def get_history():
     else:
         views = conn.execute(
             """
-            SELECT article_id AS articleId, title, source, category, published_at AS publishedAt, url, query, viewed_at AS viewedAt
-            FROM view_history
-            ORDER BY id DESC
+            SELECT
+                vh.article_id AS articleId,
+                vh.title,
+                vh.source,
+                vh.category,
+                vh.published_at AS publishedAt,
+                vh.url,
+                vh.query,
+                vh.viewed_at AS viewedAt,
+                CASE WHEN l.article_id IS NOT NULL THEN 1 ELSE 0 END AS liked
+            FROM view_history vh
+            LEFT JOIN likes l
+              ON l.user_id IS NULL AND l.article_id = vh.article_id
+            WHERE vh.user_id IS NULL
+            ORDER BY vh.id DESC
             LIMIT ?
             """,
             (limit,),
@@ -130,6 +229,17 @@ def get_history():
             """
             SELECT article_id AS articleId, category, trigger, mood, note, query, saved_at AS savedAt
             FROM reflections
+            WHERE user_id IS NULL
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        likes = conn.execute(
+            """
+            SELECT article_id AS articleId, title, source, category, published_at AS publishedAt, url, query, liked_at AS likedAt
+            FROM likes
+            WHERE user_id IS NULL
             ORDER BY id DESC
             LIMIT ?
             """,
@@ -141,5 +251,6 @@ def get_history():
         {
             "viewHistory": [dict(row) for row in views],
             "reflections": [dict(row) for row in reflections],
+            "likes": [dict(row) for row in likes],
         }
     )

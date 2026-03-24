@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes } from 'react-router-dom'
 import AuthForm from './components/AuthForm'
 import NewsCard from './components/NewsCard'
+import { toCategoryLabel } from './categoryLabels'
 import HistoryPage from './pages/HistoryPage'
 
 const DEFAULT_QUERY = 'technology'
@@ -176,11 +177,13 @@ function App() {
     authTokenRef.current = null
     setAuthToken(null)
     setAuthUser(null)
+    setLikedArticleIds(new Set())
   }
 
   // ── Article / reflection state ───────────────────────────────────────────
   const [articles, setArticles] = useState([])
   const [viewHistory, setViewHistory] = useState([])
+  const [likedArticleIds, setLikedArticleIds] = useState(() => new Set())
   const [selectedArticle, setSelectedArticle] = useState(null)
   const [selectedReasons, setSelectedReasons] = useState([])
   const [selectedTrigger, setSelectedTrigger] = useState('')
@@ -203,19 +206,24 @@ function App() {
   const chipClass =
     'rounded-full border border-slate-300 bg-white px-3 py-2 text-slate-700 transition hover:border-teal-700/50 hover:text-teal-700'
 
+  const requestArticles = async (nextQuery) => {
+    const response = await fetch(`/api/news?q=${encodeURIComponent(nextQuery)}`)
+    const data = await response.json()
+
+    if (!response.ok) {
+      throw new Error(data.error || '記事の取得に失敗しました')
+    }
+
+    return data.articles || []
+  }
+
   const fetchArticles = async (nextQuery) => {
     setLoading(true)
     setError('')
 
     try {
-      const response = await fetch(`/api/news?q=${encodeURIComponent(nextQuery)}`)
-      const data = await response.json()
-
-      if (!response.ok) {
-        throw new Error(data.error || '記事の取得に失敗しました')
-      }
-
-      setArticles(data.articles || [])
+      const articlesData = await requestArticles(nextQuery)
+      setArticles(articlesData)
       setSelectedArticle(null)
       setSelectedReasons([])
       setSelectedTrigger('')
@@ -229,6 +237,24 @@ function App() {
     } catch (fetchError) {
       setError(fetchError.message)
       setArticles([])
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const refreshArticlesAfterSelect = async (nextQuery, excludedArticleIds) => {
+    setLoading(true)
+    setError('')
+
+    try {
+      const freshArticles = await requestArticles(nextQuery)
+      const excludedSet = new Set(excludedArticleIds)
+      const nonOverlapping = freshArticles.filter((item) => !excludedSet.has(item.id))
+
+      // Prioritize unseen cards; fall back to fetched list when overlap is unavoidable.
+      setArticles(nonOverlapping.length > 0 ? nonOverlapping : freshArticles)
+    } catch (refreshError) {
+      setError(refreshError.message)
     } finally {
       setLoading(false)
     }
@@ -249,6 +275,9 @@ function App() {
           .filter(Boolean)
           .reverse() // DB returns newest-first; reverse to chronological order
         setViewHistory(categories)
+
+        const likedIds = new Set((d.likes || []).map((item) => item.articleId).filter(Boolean))
+        setLikedArticleIds(likedIds)
       })
       .catch(() => {}) // silently ignore – trend panel falls back to empty state
   }, [authUser])
@@ -278,6 +307,7 @@ function App() {
   }
 
   const handleSelectArticle = (article) => {
+    const currentArticleIds = articles.map((item) => item.id)
     const nextHistory = [...viewHistory, article.category]
     const reasons = buildSelectionReasons(article, nextHistory)
 
@@ -304,6 +334,46 @@ function App() {
     }).catch((err) => {
       setSaveError(err.message)
     })
+
+    refreshArticlesAfterSelect(query, currentArticleIds)
+  }
+
+  const handleToggleLike = async (article, nextLiked) => {
+    setSaveError('')
+
+    setLikedArticleIds((prev) => {
+      const next = new Set(prev)
+      if (nextLiked) {
+        next.add(article.id)
+      } else {
+        next.delete(article.id)
+      }
+      return next
+    })
+
+    try {
+      await postJson('/api/history/like', {
+        articleId: article.id,
+        title: article.title,
+        source: article.source,
+        category: article.category,
+        publishedAt: article.publishedAt,
+        url: article.url,
+        query,
+        liked: nextLiked,
+      })
+    } catch (err) {
+      setLikedArticleIds((prev) => {
+        const rollback = new Set(prev)
+        if (nextLiked) {
+          rollback.delete(article.id)
+        } else {
+          rollback.add(article.id)
+        }
+        return rollback
+      })
+      setSaveError(err.message)
+    }
   }
 
   const canSaveReflection = Boolean(selectedTrigger && selectedMood && selectedContext && selectedDecision)
@@ -328,18 +398,19 @@ function App() {
 
     const topCategories = Object.entries(counts).sort((a, b) => b[1] - a[1])
     const dominantCategory = topCategories[0][0]
+    const dominantCategoryLabel = toCategoryLabel(dominantCategory)
     const dominantRate = Math.round((topCategories[0][1] / viewHistory.length) * 100)
 
     let message = '複数テーマをバランスよく見ています。'
     if (dominantRate >= 60) {
-      message = `${dominantCategory}への集中が強く、関心軸がはっきりしています。`
+      message = `${dominantCategoryLabel}への集中が強く、関心軸がはっきりしています。`
     } else if (dominantRate >= 40) {
-      message = `${dominantCategory}を中心に、関連テーマへも広げています。`
+      message = `${dominantCategoryLabel}を中心に、関連テーマへも広げています。`
     }
 
     return {
       total: viewHistory.length,
-      dominantCategory,
+      dominantCategory: dominantCategoryLabel,
       dominantRate,
       topCategories,
       message,
@@ -379,8 +450,11 @@ function App() {
   // Auth guard
   if (authLoading) {
     return (
-      <div className="flex min-h-screen items-center justify-center text-slate-400">
-        <span>読み込み中...</span>
+      <div className="flex min-h-screen items-center justify-center text-slate-500">
+        <span className="loading-inline text-base font-medium">
+          <span className="loading-spinner loading-spinner-lg" aria-hidden="true" />
+          <span>読み込み中...</span>
+        </span>
       </div>
     )
   }
@@ -450,7 +524,14 @@ function App() {
               disabled={loading}
               className="rounded-xl bg-slate-900 px-4 py-3.5 text-white transition hover:bg-slate-800 disabled:cursor-wait disabled:opacity-70"
             >
-              {loading ? '読み込み中...' : '検索'}
+              {loading ? (
+                <span className="loading-inline">
+                  <span className="loading-spinner" aria-hidden="true" />
+                  <span>読み込み中...</span>
+                </span>
+              ) : (
+                '検索'
+              )}
             </button>
           </div>
         </form>
@@ -479,7 +560,7 @@ function App() {
               {viewHistory.length > 0 ? (
                 viewHistory.slice(-4).reverse().map((category, index) => (
                   <span key={`${category}-${index}`} className="rounded-full bg-teal-50 px-2 py-0.5 text-xs text-teal-700">
-                    {category}
+                    {toCategoryLabel(category)}
                   </span>
                 ))
               ) : (
@@ -495,7 +576,7 @@ function App() {
           <div className="mt-3 flex flex-wrap gap-2">
             {trendSummary.topCategories.slice(0, 5).map(([category, count]) => (
               <span key={category} className="rounded-full border border-teal-200 bg-white px-2.5 py-1 text-xs text-slate-700">
-                {category} {count}件
+                {toCategoryLabel(category)} {count}件
               </span>
             ))}
           </div>
@@ -518,7 +599,10 @@ function App() {
           )}
           {loading && (
             <div className="rounded-3xl border border-slate-300/40 bg-white/90 p-[18px] text-slate-600 shadow-soft backdrop-blur">
-              記事を取得しています...
+              <span className="loading-inline font-medium">
+                <span className="loading-spinner" aria-hidden="true" />
+                <span>記事を取得しています...</span>
+              </span>
             </div>
           )}
           {!loading && !error && articles.length === 0 && (
@@ -534,6 +618,8 @@ function App() {
                 article={article}
                 onSelect={handleSelectArticle}
                 isActive={selectedArticle?.id === article.id}
+                isLiked={likedArticleIds.has(article.id)}
+                onToggleLike={handleToggleLike}
               />
             ))}
           </div>
@@ -758,7 +844,7 @@ function App() {
               <div className="flex flex-wrap gap-2">
                 {viewHistory.slice(-8).reverse().map((category, index) => (
                   <span key={`${category}-${index}`} className="rounded-full bg-teal-50 px-2.5 py-1 text-sm text-slate-600">
-                    {category}
+                    {toCategoryLabel(category)}
                   </span>
                 ))}
               </div>
