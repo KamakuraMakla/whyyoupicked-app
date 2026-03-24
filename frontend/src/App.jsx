@@ -5,7 +5,7 @@ import NewsCard from './components/NewsCard'
 import { toCategoryLabel } from './categoryLabels'
 import HistoryPage from './pages/HistoryPage'
 
-const DEFAULT_QUERY = 'technology'
+const DEFAULT_QUERY = 'ニュース'
 const JAPANESE_TOPICS = [
   '経済',
   '生成AI',
