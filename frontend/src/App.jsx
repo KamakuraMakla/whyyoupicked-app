@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, Route, Routes } from 'react-router-dom'
 import AuthForm from './components/AuthForm'
 import NewsCard from './components/NewsCard'
@@ -201,7 +201,16 @@ function App() {
     return JAPANESE_TOPICS[index]
   })
   const [loading, setLoading] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [hasMoreArticles, setHasMoreArticles] = useState(true)
   const [error, setError] = useState('')
+  const loadMoreTriggerRef = useRef(null)
+  const articlesRef = useRef([])
+  const noNewArticleFetchesRef = useRef(0)
+
+  useEffect(() => {
+    articlesRef.current = articles
+  }, [articles])
 
   const chipClass =
     'rounded-full border border-slate-300 bg-white px-3 py-2 text-slate-700 transition hover:border-teal-700/50 hover:text-teal-700'
@@ -224,6 +233,8 @@ function App() {
     try {
       const articlesData = await requestArticles(nextQuery)
       setArticles(articlesData)
+      setHasMoreArticles(true)
+      noNewArticleFetchesRef.current = 0
       setSelectedArticle(null)
       setSelectedReasons([])
       setSelectedTrigger('')
@@ -253,12 +264,68 @@ function App() {
 
       // Prioritize unseen cards; fall back to fetched list when overlap is unavoidable.
       setArticles(nonOverlapping.length > 0 ? nonOverlapping : freshArticles)
+      setHasMoreArticles(true)
+      noNewArticleFetchesRef.current = 0
     } catch (refreshError) {
       setError(refreshError.message)
     } finally {
       setLoading(false)
     }
   }
+
+  const loadMoreArticles = useCallback(async () => {
+    if (loading || loadingMore || !hasMoreArticles) {
+      return
+    }
+
+    setLoadingMore(true)
+
+    try {
+      const fetched = await requestArticles(query)
+      const existingIds = new Set(articlesRef.current.map((item) => item.id))
+      const uniqueArticles = fetched.filter((item) => !existingIds.has(item.id))
+
+      if (uniqueArticles.length > 0) {
+        noNewArticleFetchesRef.current = 0
+        setArticles((prev) => [...prev, ...uniqueArticles])
+      } else {
+        noNewArticleFetchesRef.current += 1
+        if (noNewArticleFetchesRef.current >= 2) {
+          setHasMoreArticles(false)
+        }
+      }
+    } catch (loadError) {
+      setError(loadError.message)
+    } finally {
+      setLoadingMore(false)
+    }
+  }, [hasMoreArticles, loading, loadingMore, query])
+
+  useEffect(() => {
+    const target = loadMoreTriggerRef.current
+    if (!target) {
+      return undefined
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting) {
+          loadMoreArticles()
+        }
+      },
+      {
+        root: null,
+        rootMargin: '260px 0px',
+        threshold: 0.1,
+      }
+    )
+
+    observer.observe(target)
+
+    return () => {
+      observer.disconnect()
+    }
+  }, [loadMoreArticles])
 
   // Fetch articles and seed view-history from DB once the user is authenticated
   useEffect(() => {
@@ -623,6 +690,23 @@ function App() {
               />
             ))}
           </div>
+
+          {!loading && !error && articles.length > 0 && (
+            <>
+              <div ref={loadMoreTriggerRef} className="h-1 w-full" aria-hidden="true" />
+              <div className="mt-4 flex justify-center">
+                {loadingMore && (
+                  <span className="loading-inline text-sm text-slate-500">
+                    <span className="loading-spinner" aria-hidden="true" />
+                    <span>さらに記事を読み込み中...</span>
+                  </span>
+                )}
+                {!loadingMore && !hasMoreArticles && (
+                  <span className="text-xs text-slate-400">これ以上の新しい記事はありません</span>
+                )}
+              </div>
+            </>
+          )}
         </section>
       </main>
 
